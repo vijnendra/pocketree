@@ -1,0 +1,688 @@
+
+// MainActivity.kt
+package com.example.focustree
+
+import android.os.Bundle
+import android.os.CountDownTimer
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewmodel.compose.viewModel
+import java.text.SimpleDateFormat
+import java.util.*
+import kotlin.math.cos
+import kotlin.math.sin
+
+// Data Models
+data class StudySession(
+    val id: String = UUID.randomUUID().toString(),
+    val duration: Long,
+    val timestamp: Long = System.currentTimeMillis(),
+    val completed: Boolean = true,
+    val coinsEarned: Int = 0
+)
+
+data class AppState(
+    val totalTrees: Int = 0,
+    val totalCoins: Int = 0,
+    val sessions: List<StudySession> = emptyList()
+)
+
+// ViewModel
+class FocusTreeViewModel : ViewModel() {
+    var appState by mutableStateOf(AppState())
+        private set
+    
+    var timerState by mutableStateOf(TimerState.IDLE)
+        private set
+    
+    var remainingTime by mutableStateOf(0L)
+        private set
+    
+    var selectedDuration by mutableStateOf(25 * 60 * 1000L) // 25 minutes default
+        private set
+    
+    var treeGrowth by mutableStateOf(0f)
+        private set
+    
+    private var timer: CountDownTimer? = null
+    
+    fun selectDuration(minutes: Int) {
+        if (timerState == TimerState.IDLE) {
+            selectedDuration = minutes * 60 * 1000L
+            remainingTime = selectedDuration
+        }
+    }
+    
+    fun startTimer() {
+        if (timerState != TimerState.IDLE) return
+        
+        remainingTime = selectedDuration
+        treeGrowth = 0f
+        timerState = TimerState.RUNNING
+        
+        timer = object : CountDownTimer(selectedDuration, 100) {
+            override fun onTick(millisUntilFinished: Long) {
+                remainingTime = millisUntilFinished
+                treeGrowth = 1f - (millisUntilFinished.toFloat() / selectedDuration.toFloat())
+            }
+            
+            override fun onFinish() {
+                completeSession()
+            }
+        }.start()
+    }
+    
+    fun pauseTimer() {
+        timer?.cancel()
+        timerState = TimerState.PAUSED
+    }
+    
+    fun resumeTimer() {
+        if (timerState != TimerState.PAUSED) return
+        
+        timerState = TimerState.RUNNING
+        timer = object : CountDownTimer(remainingTime, 100) {
+            override fun onTick(millisUntilFinished: Long) {
+                remainingTime = millisUntilFinished
+                treeGrowth = 1f - (millisUntilFinished.toFloat() / selectedDuration.toFloat())
+            }
+            
+            override fun onFinish() {
+                completeSession()
+            }
+        }.start()
+    }
+    
+    fun stopTimer() {
+        timer?.cancel()
+        
+        if (timerState == TimerState.RUNNING || timerState == TimerState.PAUSED) {
+            // Tree withers - session not completed
+            val session = StudySession(
+                duration = selectedDuration - remainingTime,
+                completed = false,
+                coinsEarned = 0
+            )
+            addSession(session)
+        }
+        
+        resetTimer()
+    }
+    
+    private fun completeSession() {
+        val coins = (selectedDuration / 60000).toInt() * 10 // 10 coins per minute
+        val session = StudySession(
+            duration = selectedDuration,
+            completed = true,
+            coinsEarned = coins
+        )
+        
+        appState = appState.copy(
+            totalTrees = appState.totalTrees + 1,
+            totalCoins = appState.totalCoins + coins
+        )
+        
+        addSession(session)
+        resetTimer()
+    }
+    
+    private fun addSession(session: StudySession) {
+        appState = appState.copy(
+            sessions = listOf(session) + appState.sessions
+        )
+    }
+    
+    private fun resetTimer() {
+        timer?.cancel()
+        timerState = TimerState.IDLE
+        remainingTime = selectedDuration
+        treeGrowth = 0f
+    }
+    
+    enum class TimerState {
+        IDLE, RUNNING, PAUSED
+    }
+}
+
+// Main Activity
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            FocusTreeTheme {
+                FocusTreeApp()
+            }
+        }
+    }
+}
+
+// Theme
+@Composable
+fun FocusTreeTheme(content: @Composable () -> Unit) {
+    MaterialTheme(
+        colorScheme = lightColorScheme(
+            primary = Color(0xFF2E7D32),
+            secondary = Color(0xFF66BB6A),
+            background = Color(0xFFF1F8E9),
+            surface = Color.White,
+            onPrimary = Color.White,
+            onSecondary = Color.White,
+            onBackground = Color(0xFF1B5E20),
+            onSurface = Color(0xFF1B5E20)
+        ),
+        content = content
+    )
+}
+
+// Main App
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FocusTreeApp(viewModel: FocusTreeViewModel = viewModel()) {
+    var selectedTab by remember { mutableStateOf(0) }
+    
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Focus Tree", fontWeight = FontWeight.Bold) },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    titleContentColor = Color.White
+                ),
+                actions = {
+                    Row(
+                        modifier = Modifier.padding(end = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.Park,
+                                contentDescription = "Trees",
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                "${viewModel.appState.totalTrees}",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.MonetizationOn,
+                                contentDescription = "Coins",
+                                tint = Color(0xFFFFD700),
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                "${viewModel.appState.totalCoins}",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            )
+        },
+        bottomBar = {
+            NavigationBar(
+                containerColor = Color.White,
+                tonalElevation = 8.dp
+            ) {
+                NavigationBarItem(
+                    selected = selectedTab == 0,
+                    onClick = { selectedTab = 0 },
+                    icon = { Icon(Icons.Default.Timer, "Timer") },
+                    label = { Text("Focus") }
+                )
+                NavigationBarItem(
+                    selected = selectedTab == 1,
+                    onClick = { selectedTab = 1 },
+                    icon = { Icon(Icons.Default.History, "History") },
+                    label = { Text("History") }
+                )
+            }
+        }
+    ) { padding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .background(MaterialTheme.colorScheme.background)
+        ) {
+            when (selectedTab) {
+                0 -> TimerScreen(viewModel)
+                1 -> HistoryScreen(viewModel)
+            }
+        }
+    }
+}
+
+// Timer Screen
+@Composable
+fun TimerScreen(viewModel: FocusTreeViewModel) {
+    val quotes = remember {
+        listOf(
+            "Focus on the journey, not the destination.",
+            "Small steps lead to big changes.",
+            "Stay committed to your decisions.",
+            "Progress, not perfection.",
+            "Your future self will thank you."
+        )
+    }
+    val randomQuote = remember { quotes.random() }
+    
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.SpaceBetween
+    ) {
+        // Motivational Quote
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            elevation = CardDefaults.cardElevation(2.dp)
+        ) {
+            Text(
+                text = "\"$randomQuote\"",
+                modifier = Modifier.padding(16.dp),
+                style = MaterialTheme.typography.bodyLarge,
+                textAlign = TextAlign.Center,
+                fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+            )
+        }
+        
+        Spacer(Modifier.height(16.dp))
+        
+        // Tree Visualization
+        TreeVisualization(
+            growth = viewModel.treeGrowth,
+            isWithered = false
+        )
+        
+        Spacer(Modifier.height(24.dp))
+        
+        // Timer Display
+        Text(
+            text = formatTime(viewModel.remainingTime),
+            fontSize = 48.sp,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary
+        )
+        
+        Spacer(Modifier.height(24.dp))
+        
+        // Duration Selection
+        if (viewModel.timerState == FocusTreeViewModel.TimerState.IDLE) {
+            Text(
+                "Select Duration",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf(15, 25, 45, 60).forEach { minutes ->
+                    DurationChip(
+                        minutes = minutes,
+                        selected = viewModel.selectedDuration == minutes * 60 * 1000L,
+                        onClick = { viewModel.selectDuration(minutes) }
+                    )
+                }
+            }
+        }
+        
+        Spacer(Modifier.height(24.dp))
+        
+        // Control Buttons
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            when (viewModel.timerState) {
+                FocusTreeViewModel.TimerState.IDLE -> {
+                    Button(
+                        onClick = { viewModel.startTimer() },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(56.dp),
+                        shape = RoundedCornerShape(28.dp)
+                    ) {
+                        Icon(Icons.Default.PlayArrow, "Start")
+                        Spacer(Modifier.width(8.dp))
+                        Text("Start Focus", fontSize = 16.sp)
+                    }
+                }
+                FocusTreeViewModel.TimerState.RUNNING -> {
+                    OutlinedButton(
+                        onClick = { viewModel.pauseTimer() },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(56.dp),
+                        shape = RoundedCornerShape(28.dp)
+                    ) {
+                        Icon(Icons.Default.Pause, "Pause")
+                        Spacer(Modifier.width(8.dp))
+                        Text("Pause")
+                    }
+                    Button(
+                        onClick = { viewModel.stopTimer() },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(56.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFFD32F2F)
+                        ),
+                        shape = RoundedCornerShape(28.dp)
+                    ) {
+                        Icon(Icons.Default.Close, "Stop")
+                        Spacer(Modifier.width(8.dp))
+                        Text("Give Up")
+                    }
+                }
+                FocusTreeViewModel.TimerState.PAUSED -> {
+                    Button(
+                        onClick = { viewModel.resumeTimer() },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(56.dp),
+                        shape = RoundedCornerShape(28.dp)
+                    ) {
+                        Icon(Icons.Default.PlayArrow, "Resume")
+                        Spacer(Modifier.width(8.dp))
+                        Text("Resume")
+                    }
+                    OutlinedButton(
+                        onClick = { viewModel.stopTimer() },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(56.dp),
+                        shape = RoundedCornerShape(28.dp)
+                    ) {
+                        Icon(Icons.Default.Close, "Cancel")
+                        Spacer(Modifier.width(8.dp))
+                        Text("Cancel")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun DurationChip(minutes: Int, selected: Boolean, onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier
+            .clip(RoundedCornerShape(20.dp))
+            .clickable(onClick = onClick),
+        color = if (selected) MaterialTheme.colorScheme.primary else Color.White,
+        tonalElevation = if (selected) 0.dp else 2.dp
+    ) {
+        Text(
+            text = "${minutes}m",
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+            color = if (selected) Color.White else MaterialTheme.colorScheme.onSurface,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+        )
+    }
+}
+
+@Composable
+fun TreeVisualization(growth: Float, isWithered: Boolean) {
+    val infiniteTransition = rememberInfiniteTransition()
+    val sway by infiniteTransition.animateFloat(
+        initialValue = -2f,
+        targetValue = 2f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(2000, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        )
+    )
+    
+    Box(
+        modifier = Modifier
+            .size(250.dp)
+            .clip(CircleShape)
+            .background(Color.White),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(
+            modifier = Modifier.size(200.dp)
+        ) {
+            val centerX = size.width / 2
+            val baseY = size.height * 0.9f
+            
+            // Draw trunk
+            val trunkHeight = 60f * growth
+            drawRect(
+                color = if (isWithered) Color.Gray else Color(0xFF8D6E63),
+                topLeft = Offset(centerX - 8f, baseY - trunkHeight),
+                size = androidx.compose.ui.geometry.Size(16f, trunkHeight)
+            )
+            
+            if (growth > 0.2f) {
+                // Draw branches and leaves
+                val leafColor = if (isWithered) Color.Gray else Color(0xFF4CAF50)
+                val leafSize = 80f * ((growth - 0.2f) / 0.8f)
+                
+                // Main canopy
+                drawCircle(
+                    color = leafColor,
+                    radius = leafSize / 2,
+                    center = Offset(centerX + sway, baseY - trunkHeight - leafSize / 3)
+                )
+                
+                if (growth > 0.5f) {
+                    // Side leaves
+                    drawCircle(
+                        color = leafColor.copy(alpha = 0.8f),
+                        radius = leafSize / 3,
+                        center = Offset(centerX - leafSize / 2 + sway, baseY - trunkHeight)
+                    )
+                    drawCircle(
+                        color = leafColor.copy(alpha = 0.8f),
+                        radius = leafSize / 3,
+                        center = Offset(centerX + leafSize / 2 + sway, baseY - trunkHeight)
+                    )
+                }
+            }
+            
+            // Ground
+            drawRect(
+                color = Color(0xFF795548),
+                topLeft = Offset(0f, baseY),
+                size = androidx.compose.ui.geometry.Size(size.width, 10f)
+            )
+        }
+    }
+}
+
+// History Screen
+@Composable
+fun HistoryScreen(viewModel: FocusTreeViewModel) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+    ) {
+        // Stats Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            elevation = CardDefaults.cardElevation(2.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                horizontalArrangement = Arrangement.SpaceAround
+            ) {
+                StatItem("Sessions", "${viewModel.appState.sessions.size}")
+                StatItem("Completed", "${viewModel.appState.sessions.count { it.completed }}")
+                StatItem("Trees", "${viewModel.appState.totalTrees}")
+            }
+        }
+        
+        Spacer(Modifier.height(16.dp))
+        
+        Text(
+            "Recent Sessions",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold
+        )
+        
+        Spacer(Modifier.height(8.dp))
+        
+        if (viewModel.appState.sessions.isEmpty()) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    "No sessions yet.\nStart focusing to grow your first tree!",
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                )
+            }
+        } else {
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(viewModel.appState.sessions) { session ->
+                    SessionCard(session)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun StatItem(label: String, value: String) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            value,
+            fontSize = 28.sp,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Text(
+            label,
+            fontSize = 14.sp,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+        )
+    }
+}
+
+@Composable
+fun SessionCard(session: StudySession) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (session.completed) Color.White else Color(0xFFFFEBEE)
+        ),
+        elevation = CardDefaults.cardElevation(2.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Icon(
+                    if (session.completed) Icons.Default.CheckCircle else Icons.Default.Cancel,
+                    contentDescription = null,
+                    tint = if (session.completed) Color(0xFF4CAF50) else Color(0xFFE53935),
+                    modifier = Modifier.size(32.dp)
+                )
+                Column {
+                    Text(
+                        formatDuration(session.duration),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
+                    Text(
+                        formatTimestamp(session.timestamp),
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                }
+            }
+            
+            if (session.completed) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Default.MonetizationOn,
+                        contentDescription = null,
+                        tint = Color(0xFFFFD700),
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        "+${session.coinsEarned}",
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFFFF8F00)
+                    )
+                }
+            } else {
+                Text(
+                    "Incomplete",
+                    color = Color(0xFFE53935),
+                    fontWeight = FontWeight.Medium
+                )
+            }
+        }
+    }
+}
+
+// Helper Functions
+fun formatTime(millis: Long): String {
+    val totalSeconds = millis / 1000
+    val minutes = totalSeconds / 60
+    val seconds = totalSeconds % 60
+    return String.format("%02d:%02d", minutes, seconds)
+}
+
+fun formatDuration(millis: Long): String {
+    val minutes = millis / 60000
+    return "$minutes minutes"
+}
+
+fun formatTimestamp(timestamp: Long): String {
+    val sdf = SimpleDateFormat("MMM dd, yyyy 'at' hh:mm a", Locale.getDefault())
+    return sdf.format(Date(timestamp))
+}
